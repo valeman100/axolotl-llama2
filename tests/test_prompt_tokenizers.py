@@ -130,7 +130,7 @@ class InstructionWSystemPromptTokenizingStrategyTest(unittest.TestCase):
             "output": "Hi! How can I help?",
         }
         example = strat.tokenize_prompt(sample)
-        assert example["input_ids"][0:3] == [1, 671, 20118]  # <s>use cot
+        assert example["input_ids"][:3] == [1, 671, 20118]
         assert example["input_ids"][3] == 11889  # USER
 
 

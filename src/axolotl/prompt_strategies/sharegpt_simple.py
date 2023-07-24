@@ -47,9 +47,7 @@ class SimpleRoleShareGPTPromptTokenizingStrategy(ShareGPTPromptTokenizingStrateg
 
     def get_conversation_thread(self, prompt):
         conversations = prompt["conversations"]
-        # remap role: prompter/assistant, text: ... => from: human/gpt, value: ...
-        turns = [{"from": t["role"], "value": t["value"]} for t in conversations]
-        return turns
+        return [{"from": t["role"], "value": t["value"]} for t in conversations]
 
 
 class GuanacoShareGPTPromptTokenizingStrategy(ShareGPTPromptTokenizingStrategy):
@@ -61,7 +59,7 @@ class GuanacoShareGPTPromptTokenizingStrategy(ShareGPTPromptTokenizingStrategy):
         conversations = prompt["conversations"]
         # remap role: prompter/assistant, text: ... => from: human/gpt, value: ...
         role_map = {"prompter": "human", "assistant": "gpt"}
-        turns = [
-            {"from": role_map[t["role"]], "value": t["text"]} for t in conversations
+        return [
+            {"from": role_map[t["role"]], "value": t["text"]}
+            for t in conversations
         ]
-        return turns

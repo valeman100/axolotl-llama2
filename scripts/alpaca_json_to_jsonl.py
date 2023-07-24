@@ -33,10 +33,7 @@ def main(
 
     file_reader = FileReader()
     writer: Union[StdoutWriter, FileWriter]
-    if to_stdout or output is None:
-        writer = StdoutWriter()
-    else:
-        writer = FileWriter(output)
+    writer = StdoutWriter() if to_stdout or output is None else FileWriter(output)
     json_parser = JsonParser()
     jsonl_serializer = JsonlSerializer()
 

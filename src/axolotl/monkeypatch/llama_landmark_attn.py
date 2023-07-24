@@ -66,10 +66,7 @@ def apply_rotary_pos_emb(q, k, cos, sin, position_ids):
     sin = sin.squeeze(1).squeeze(0)  # [seq_len, dim]
     cos = cos[position_ids].unsqueeze(1)  # [bs, 1, seq_len, dim]
     sin = sin[position_ids].unsqueeze(1)  # [bs, 1, seq_len, dim]
-    if q is None:
-        q_embed = None
-    else:
-        q_embed = (q * cos) + (rotate_half(q) * sin)
+    q_embed = None if q is None else (q * cos) + (rotate_half(q) * sin)
     k_embed = (k * cos) + (rotate_half(k) * sin)
     return q_embed, k_embed
 
@@ -259,187 +256,203 @@ class LlamaAttention(nn.Module):
         # [bsz, nh, t, hd]
 
         attn_prefix = None
-        if past_key_value is not None:
-            # reuse k, v, self_attention
-            if self.mem_freq is None:
-                cache_len = past_key_value[0].shape[2]
-                if self.max_cache_size is not None:
-                    cache_len = min(cache_len, self.max_cache_size)
-                if is_mem is not None:
-                    is_mem = torch.cat(
-                        (is_mem.new_zeros((1, 1, q_len, cache_len)), is_mem), dim=-1
-                    )
-                    last_section_mask = torch.cat(
-                        (
-                            last_section_mask.new_ones((1, 1, q_len, cache_len)),
-                            last_section_mask,
-                        ),
-                        dim=-1,
-                    )
+        if past_key_value is None:
+            past_key_states = (
+                key_states if self.mem_freq is None else key_states_before_pos
+            )
+            past_value_states = value_states
+            expected_att_size = (bsz, self.num_heads, q_len, kv_seq_len)
+            past_key_value = (past_key_states, past_value_states) if use_cache else None
 
-                past_key_states = torch.cat([past_key_value[0], key_states], dim=2)
-                past_value_states = torch.cat([past_key_value[1], value_states], dim=2)
-                key_states = past_key_states[:, :, -(q_len + cache_len) :]
-                value_states = past_value_states[:, :, -(q_len + cache_len) :]
-                expected_att_size = (bsz, self.num_heads, q_len, cache_len + q_len)
-            else:
-                orig_value_states = value_states
-
-                incomplete_len = past_key_value[0].shape[2] % (self.mem_freq + 1)
-                full_len = past_key_value[0].shape[2] - incomplete_len
-                past_key_mem, past_key_incomplete = torch.split(
-                    past_key_value[0], (full_len, incomplete_len), dim=2
-                )
-                past_value_mem, past_value_incomplete = torch.split(
-                    past_key_value[1], (full_len, incomplete_len), dim=2
-                )
-
-                if offload_cache_to_cpu:
-                    past_key_value = (
-                        past_key_incomplete,
-                        past_value_incomplete,
-                        *past_key_value[2:],
-                    )
-
-                if incomplete_len > 0:
-                    assert q_len + incomplete_len <= (self.mem_freq + 1)
+        elif self.mem_freq is None:
+            cache_len = past_key_value[0].shape[2]
+            if self.max_cache_size is not None:
+                cache_len = min(cache_len, self.max_cache_size)
+            if is_mem is not None:
                 is_mem = torch.cat(
-                    (is_mem.new_zeros((1, 1, q_len, incomplete_len)), is_mem), dim=-1
+                    (is_mem.new_zeros((1, 1, q_len, cache_len)), is_mem), dim=-1
                 )
                 last_section_mask = torch.cat(
                     (
-                        last_section_mask.new_ones((1, 1, q_len, incomplete_len)),
+                        last_section_mask.new_ones((1, 1, q_len, cache_len)),
                         last_section_mask,
                     ),
                     dim=-1,
                 )
 
-                if len(past_key_value) > 2:
-                    full_len += past_key_value[3].shape[2] * past_key_value[3].shape[3]
-                past_key_incomplete_pos = torch.arange(
-                    full_len,
-                    full_len + incomplete_len,
-                    dtype=torch.long,
-                    device=position_ids.device,
-                ).unsqueeze(0)
-                _, past_key_incomplete = apply_rotary_pos_emb(
-                    None, past_key_incomplete, cos, sin, past_key_incomplete_pos
-                )
-                key_states = torch.cat((past_key_incomplete, key_states), dim=2)
-                value_states = torch.cat((past_value_incomplete, value_states), dim=2)
+            past_key_states = torch.cat([past_key_value[0], key_states], dim=2)
+            past_value_states = torch.cat([past_key_value[1], value_states], dim=2)
+            key_states = past_key_states[:, :, -(q_len + cache_len) :]
+            value_states = past_value_states[:, :, -(q_len + cache_len) :]
+            expected_att_size = (bsz, self.num_heads, q_len, cache_len + q_len)
+        else:
+            orig_value_states = value_states
 
-                past_key_mem = past_key_mem.view(
-                    bsz, self.num_heads, -1, self.mem_freq + 1, self.head_dim
-                )
-                past_value_mem = past_value_mem.view(
-                    bsz, self.num_heads, -1, self.mem_freq + 1, self.head_dim
+            incomplete_len = past_key_value[0].shape[2] % (self.mem_freq + 1)
+            full_len = past_key_value[0].shape[2] - incomplete_len
+            past_key_mem, past_key_incomplete = torch.split(
+                past_key_value[0], (full_len, incomplete_len), dim=2
+            )
+            past_value_mem, past_value_incomplete = torch.split(
+                past_key_value[1], (full_len, incomplete_len), dim=2
+            )
+
+            if offload_cache_to_cpu:
+                past_key_value = (
+                    past_key_incomplete,
+                    past_value_incomplete,
+                    *past_key_value[2:],
                 )
 
-                if len(past_key_value) > 2:
-                    mem_key_nopos = torch.cat(
-                        (
-                            past_key_value[2],
-                            past_key_mem.select(dim=3, index=self.mem_freq),
-                        ),
-                        dim=2,
-                    )
-                    past_key_mem_offload = past_key_value[3]
-                    past_key_mem = torch.cat(
-                        (
-                            past_key_mem_offload,
-                            past_key_mem.to(past_key_mem_offload.device),
-                        ),
-                        dim=2,
-                    )
-                    past_value_mem = torch.cat(
-                        (
-                            past_key_value[4],
-                            past_value_mem.to(past_key_mem_offload.device),
-                        ),
-                        dim=2,
-                    )
-                else:
-                    mem_key_nopos = past_key_mem.select(dim=3, index=self.mem_freq)
+            if incomplete_len > 0:
+                assert q_len + incomplete_len <= (self.mem_freq + 1)
+            is_mem = torch.cat(
+                (is_mem.new_zeros((1, 1, q_len, incomplete_len)), is_mem), dim=-1
+            )
+            last_section_mask = torch.cat(
+                (
+                    last_section_mask.new_ones((1, 1, q_len, incomplete_len)),
+                    last_section_mask,
+                ),
+                dim=-1,
+            )
 
-                num_mems = past_key_mem.shape[2]
-                top_k = min(self.top_k, num_mems)
-                prefix_len = full_len - (top_k + 1) * (self.mem_freq + 1)
-                mem_indices = torch.cat(
+            if len(past_key_value) > 2:
+                full_len += past_key_value[3].shape[2] * past_key_value[3].shape[3]
+            past_key_incomplete_pos = torch.arange(
+                full_len,
+                full_len + incomplete_len,
+                dtype=torch.long,
+                device=position_ids.device,
+            ).unsqueeze(0)
+            _, past_key_incomplete = apply_rotary_pos_emb(
+                None, past_key_incomplete, cos, sin, past_key_incomplete_pos
+            )
+            key_states = torch.cat((past_key_incomplete, key_states), dim=2)
+            value_states = torch.cat((past_value_incomplete, value_states), dim=2)
+
+            past_key_mem = past_key_mem.view(
+                bsz, self.num_heads, -1, self.mem_freq + 1, self.head_dim
+            )
+            past_value_mem = past_value_mem.view(
+                bsz, self.num_heads, -1, self.mem_freq + 1, self.head_dim
+            )
+
+            if len(past_key_value) > 2:
+                mem_key_nopos = torch.cat(
                     (
-                        position_ids.new_zeros((max(0, num_mems - top_k),)),
-                        torch.arange(
-                            1,
-                            top_k + 1,
-                            device=query_states.device,
-                            dtype=position_ids.dtype,
-                        ),
+                        past_key_value[2],
+                        past_key_mem.select(dim=3, index=self.mem_freq),
                     ),
-                    dim=0,
+                    dim=2,
                 )
-                mem_pos = (mem_indices * (self.mem_freq + 1) + self.mem_freq).unsqueeze(
-                    0
-                ).expand(bsz, -1) + prefix_len
-                _, mem_key = apply_rotary_pos_emb(
-                    None, mem_key_nopos, cos, sin, mem_pos
+                past_key_mem_offload = past_key_value[3]
+                past_key_mem = torch.cat(
+                    (
+                        past_key_mem_offload,
+                        past_key_mem.to(past_key_mem_offload.device),
+                    ),
+                    dim=2,
                 )
-                mem_attn_weights = torch.matmul(
-                    query_states, mem_key.transpose(2, 3)
-                ) / math.sqrt(self.head_dim)
+                past_value_mem = torch.cat(
+                    (
+                        past_key_value[4],
+                        past_value_mem.to(past_key_mem_offload.device),
+                    ),
+                    dim=2,
+                )
+            else:
+                mem_key_nopos = past_key_mem.select(dim=3, index=self.mem_freq)
 
-                if offload_cache_to_cpu:
-                    aggregate = "max_over_tokens"
-                else:
-                    aggregate = None
-                if aggregate == "max_over_tokens":
-                    token_retrievers = 1
-                    head_retrievers = self.num_heads
-                    mem_attn_weights = torch.nn.functional.softmax(
-                        mem_attn_weights, dim=-1
-                    )
-                    mem_attn_weights = mem_attn_weights.amax(dim=2, keepdim=True)
-                elif aggregate is None:
-                    token_retrievers = q_len
-                    head_retrievers = self.num_heads
-                else:
-                    raise NotImplementedError()
+            num_mems = past_key_mem.shape[2]
+            top_k = min(self.top_k, num_mems)
+            prefix_len = full_len - (top_k + 1) * (self.mem_freq + 1)
+            mem_indices = torch.cat(
+                (
+                    position_ids.new_zeros((max(0, num_mems - top_k),)),
+                    torch.arange(
+                        1,
+                        top_k + 1,
+                        device=query_states.device,
+                        dtype=position_ids.dtype,
+                    ),
+                ),
+                dim=0,
+            )
+            mem_pos = (mem_indices * (self.mem_freq + 1) + self.mem_freq).unsqueeze(
+                0
+            ).expand(bsz, -1) + prefix_len
+            _, mem_key = apply_rotary_pos_emb(
+                None, mem_key_nopos, cos, sin, mem_pos
+            )
+            mem_attn_weights = torch.matmul(
+                query_states, mem_key.transpose(2, 3)
+            ) / math.sqrt(self.head_dim)
 
-                mem_selected_idx = (
-                    mem_attn_weights.topk(dim=-1, k=top_k)[1]
-                    .sort(dim=-1)[0]
-                    .view(bsz, head_retrievers, token_retrievers, top_k)
+            aggregate = "max_over_tokens" if offload_cache_to_cpu else None
+            if aggregate == "max_over_tokens":
+                token_retrievers = 1
+                head_retrievers = self.num_heads
+                mem_attn_weights = torch.nn.functional.softmax(
+                    mem_attn_weights, dim=-1
                 )
+                mem_attn_weights = mem_attn_weights.amax(dim=2, keepdim=True)
+            elif aggregate is None:
+                token_retrievers = q_len
+                head_retrievers = self.num_heads
+            else:
+                raise NotImplementedError()
 
-                selected_indices = torch.arange(
-                    0,
-                    top_k * (self.mem_freq + 1),
-                    device=query_states.device,
-                    dtype=position_ids.dtype,
-                )
-                selected_indices = torch.where(
-                    mem_selected_idx >= num_mems - top_k, self.mem_freq + 1, 0
-                ).unsqueeze(-1) + selected_indices.view(
-                    1, 1, 1, top_k, self.mem_freq + 1
-                )
-                selected_indices = (
-                    selected_indices.view(
-                        bsz, head_retrievers, token_retrievers, -1
-                    ).expand(bsz, self.num_heads, q_len, -1)
-                    + prefix_len
-                )
+            mem_selected_idx = (
+                mem_attn_weights.topk(dim=-1, k=top_k)[1]
+                .sort(dim=-1)[0]
+                .view(bsz, head_retrievers, token_retrievers, top_k)
+            )
 
-                mem_selected_idx = mem_selected_idx.to(past_key_mem.device)
+            selected_indices = torch.arange(
+                0,
+                top_k * (self.mem_freq + 1),
+                device=query_states.device,
+                dtype=position_ids.dtype,
+            )
+            selected_indices = torch.where(
+                mem_selected_idx >= num_mems - top_k, self.mem_freq + 1, 0
+            ).unsqueeze(-1) + selected_indices.view(
+                1, 1, 1, top_k, self.mem_freq + 1
+            )
+            selected_indices = (
+                selected_indices.view(
+                    bsz, head_retrievers, token_retrievers, -1
+                ).expand(bsz, self.num_heads, q_len, -1)
+                + prefix_len
+            )
 
-                mem_selected_idx = mem_selected_idx.view(
-                    bsz, self.num_heads, token_retrievers, top_k, 1, 1
-                ).expand(
-                    bsz,
-                    self.num_heads,
-                    token_retrievers,
-                    top_k,
-                    self.mem_freq + 1,
-                    self.head_dim,
-                )
-                selected_keys = past_key_mem.unsqueeze(2).expand(
+            mem_selected_idx = mem_selected_idx.to(past_key_mem.device)
+
+            mem_selected_idx = mem_selected_idx.view(
+                bsz, self.num_heads, token_retrievers, top_k, 1, 1
+            ).expand(
+                bsz,
+                self.num_heads,
+                token_retrievers,
+                top_k,
+                self.mem_freq + 1,
+                self.head_dim,
+            )
+            selected_keys = past_key_mem.unsqueeze(2).expand(
+                bsz,
+                self.num_heads,
+                token_retrievers,
+                -1,
+                self.mem_freq + 1,
+                self.head_dim,
+            )
+            selected_keys = selected_keys.take_along_dim(
+                mem_selected_idx, dim=3
+            ).to(query_states.device)
+            selected_values = (
+                past_value_mem.unsqueeze(2)
+                .expand(
                     bsz,
                     self.num_heads,
                     token_retrievers,
@@ -447,88 +460,66 @@ class LlamaAttention(nn.Module):
                     self.mem_freq + 1,
                     self.head_dim,
                 )
-                selected_keys = selected_keys.take_along_dim(
-                    mem_selected_idx, dim=3
-                ).to(query_states.device)
-                selected_values = (
-                    past_value_mem.unsqueeze(2)
-                    .expand(
-                        bsz,
-                        self.num_heads,
-                        token_retrievers,
-                        -1,
-                        self.mem_freq + 1,
-                        self.head_dim,
-                    )
-                    .take_along_dim(mem_selected_idx, dim=3)
-                    .to(query_states.device)
-                )
+                .take_along_dim(mem_selected_idx, dim=3)
+                .to(query_states.device)
+            )
 
-                selected_keys = selected_keys.view(
-                    bsz, self.num_heads, token_retrievers, -1, self.head_dim
-                ).expand(bsz, self.num_heads, q_len, -1, self.head_dim)
-                selected_keys = apply_rotary_pos_emb(
-                    None, selected_keys.unsqueeze(1), cos, sin, selected_indices
-                )[1].squeeze(1)
-                selected_values = selected_values.view(
-                    bsz, self.num_heads, token_retrievers, -1, self.head_dim
-                ).expand(bsz, self.num_heads, q_len, -1, self.head_dim)
-                attn_prefix = torch.matmul(
-                    query_states.unsqueeze(3), selected_keys.transpose(3, 4)
-                ).squeeze(3) / math.sqrt(self.head_dim)
-                is_mem_prefix = (
-                    torch.cat(
-                        (is_mem.new_zeros((self.mem_freq,)), is_mem.new_ones((1,)))
-                    )
-                    .unsqueeze(0)
-                    .repeat((top_k, 1))
+            selected_keys = selected_keys.view(
+                bsz, self.num_heads, token_retrievers, -1, self.head_dim
+            ).expand(bsz, self.num_heads, q_len, -1, self.head_dim)
+            selected_keys = apply_rotary_pos_emb(
+                None, selected_keys.unsqueeze(1), cos, sin, selected_indices
+            )[1].squeeze(1)
+            selected_values = selected_values.view(
+                bsz, self.num_heads, token_retrievers, -1, self.head_dim
+            ).expand(bsz, self.num_heads, q_len, -1, self.head_dim)
+            attn_prefix = torch.matmul(
+                query_states.unsqueeze(3), selected_keys.transpose(3, 4)
+            ).squeeze(3) / math.sqrt(self.head_dim)
+            is_mem_prefix = (
+                torch.cat(
+                    (is_mem.new_zeros((self.mem_freq,)), is_mem.new_ones((1,)))
                 )
-                is_mem_prefix = is_mem_prefix.view(1, 1, 1, -1).expand(1, 1, q_len, -1)
-                is_mem = torch.cat((is_mem_prefix, is_mem), dim=-1)
-                last_section_mask = torch.cat(
-                    (
-                        last_section_mask.new_zeros(
-                            (1, 1, q_len, top_k * (self.mem_freq + 1))
-                        ),
-                        last_section_mask,
+                .unsqueeze(0)
+                .repeat((top_k, 1))
+            )
+            is_mem_prefix = is_mem_prefix.view(1, 1, 1, -1).expand(1, 1, q_len, -1)
+            is_mem = torch.cat((is_mem_prefix, is_mem), dim=-1)
+            last_section_mask = torch.cat(
+                (
+                    last_section_mask.new_zeros(
+                        (1, 1, q_len, top_k * (self.mem_freq + 1))
                     ),
-                    dim=-1,
-                )
-                expected_att_size = (bsz, self.num_heads, q_len, q_len + incomplete_len)
+                    last_section_mask,
+                ),
+                dim=-1,
+            )
+            expected_att_size = (bsz, self.num_heads, q_len, q_len + incomplete_len)
 
-                past_key_states = torch.cat(
-                    [past_key_value[0], key_states_before_pos], dim=2
-                )
-                past_value_states = torch.cat(
-                    [past_key_value[1], orig_value_states], dim=2
-                )
+            past_key_states = torch.cat(
+                [past_key_value[0], key_states_before_pos], dim=2
+            )
+            past_value_states = torch.cat(
+                [past_key_value[1], orig_value_states], dim=2
+            )
 
-                if offload_cache_to_cpu:
-                    past_key_value = (
-                        (
-                            past_key_states,
-                            past_value_states,
-                            mem_key_nopos,
-                            past_key_mem.to("cpu"),
-                            past_value_mem.to("cpu"),
-                            *past_key_value[5:],
-                        )
-                        if use_cache
-                        else None
+            if offload_cache_to_cpu:
+                past_key_value = (
+                    (
+                        past_key_states,
+                        past_value_states,
+                        mem_key_nopos,
+                        past_key_mem.to("cpu"),
+                        past_value_mem.to("cpu"),
+                        *past_key_value[5:],
                     )
-                else:
-                    past_key_value = (
-                        (past_key_states, past_value_states) if use_cache else None
-                    )
-
-        else:
-            if self.mem_freq is None:
-                past_key_states = key_states
+                    if use_cache
+                    else None
+                )
             else:
-                past_key_states = key_states_before_pos
-            past_value_states = value_states
-            expected_att_size = (bsz, self.num_heads, q_len, kv_seq_len)
-            past_key_value = (past_key_states, past_value_states) if use_cache else None
+                past_key_value = (
+                    (past_key_states, past_value_states) if use_cache else None
+                )
 
         attn_weights = torch.matmul(
             query_states, key_states.transpose(2, 3)
@@ -1120,11 +1111,7 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
         **kwargs,
     ):
         total_len = input_ids.shape[1]
-        if past_key_values:
-            prev_len = input_ids.shape[1] - 1
-        else:
-            prev_len = 0
-
+        prev_len = input_ids.shape[1] - 1 if past_key_values else 0
         position_ids = kwargs.get("position_ids", None)
 
         if self.mem_freq is not None:
@@ -1184,26 +1171,21 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
             position_ids.masked_fill_(attention_mask == 0, 1)
             position_ids = position_ids[:, -input_ids.shape[1] :].unsqueeze(-1)
 
-        # if `inputs_embeds` are passed, we only want to use them in the 1st generation step
-        if (
-            inputs_embeds is not None
-            and past_key_values is None
-            and self.mem_freq is None
-        ):
-            model_inputs = {"inputs_embeds": inputs_embeds}
-        else:
-            model_inputs = {"input_ids": input_ids}
-
-        model_inputs.update(
-            {
-                "position_ids": position_ids,
-                "past_key_values": past_key_values,
-                "use_cache": kwargs.get("use_cache"),
-                "attention_mask": attention_mask,
-                "offload_cache_to_cpu": kwargs.get("offload_cache_to_cpu"),
-            }
-        )
-        return model_inputs
+        return (
+            {"inputs_embeds": inputs_embeds}
+            if (
+                inputs_embeds is not None
+                and past_key_values is None
+                and self.mem_freq is None
+            )
+            else {"input_ids": input_ids}
+        ) | {
+            "position_ids": position_ids,
+            "past_key_values": past_key_values,
+            "use_cache": kwargs.get("use_cache"),
+            "attention_mask": attention_mask,
+            "offload_cache_to_cpu": kwargs.get("offload_cache_to_cpu"),
+        }
 
     @staticmethod
     def _reorder_cache(past_key_values, beam_idx):

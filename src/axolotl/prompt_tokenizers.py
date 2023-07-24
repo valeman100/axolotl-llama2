@@ -47,16 +47,12 @@ class PromptTokenizingStrategy(abc.ABC):
     @functools.lru_cache(maxsize=128)
     def _get_user_token(self):
         id_or_ids = self.tokenizer.convert_tokens_to_ids("<|USER|>")
-        if isinstance(id_or_ids, (int,)):
-            return id_or_ids
-        return False
+        return id_or_ids if isinstance(id_or_ids, (int,)) else False
 
     @functools.lru_cache(maxsize=128)
     def _get_assistant_token(self):
         id_or_ids = self.tokenizer.convert_tokens_to_ids("<|ASSISTANT|>")
-        if isinstance(id_or_ids, (int,)):
-            return id_or_ids
-        return False
+        return id_or_ids if isinstance(id_or_ids, (int,)) else False
 
     def _tokenize(self, prompt: str, add_eos_token=True, strip_bos_token=False):
         result = self.tokenizer(
@@ -232,9 +228,7 @@ class CompletionPromptTokenizingStrategy(InstructionPromptTokenizingStrategy):
 
     def tokenize_prompt(self, prompt):
         full_prompt = self._build_full_prompt(prompt["text"], None, None)
-        tokenized_full_prompt = self._tokenize(full_prompt)
-
-        return tokenized_full_prompt
+        return self._tokenize(full_prompt)
 
     def _build_full_prompt(
         self, instruction, input, response

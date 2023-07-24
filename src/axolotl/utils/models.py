@@ -34,9 +34,7 @@ def load_tokenizer(
     tokenizer_type,
     cfg,
 ):
-    use_fast = True  # this is the default
-    if cfg.tokenizer_use_fast is not None:
-        use_fast = cfg.tokenizer_use_fast
+    use_fast = True if cfg.tokenizer_use_fast is None else cfg.tokenizer_use_fast
     if tokenizer_type:
         tokenizer = getattr(transformers, tokenizer_type).from_pretrained(
             tokenizer_config,
@@ -88,37 +86,38 @@ def load_model(
         cfg.model_type and "llama" in cfg.model_type.lower()
     )
 
-    if cfg.is_llama_derived_model and cfg.flash_attention:
-        if cfg.device not in ["mps", "cpu"] and not cfg.inference:
-            from axolotl.flash_attn import replace_llama_attn_with_flash_attn
+    if cfg.is_llama_derived_model:
+        if cfg.flash_attention:
+            if cfg.device not in ["mps", "cpu"] and not cfg.inference:
+                from axolotl.flash_attn import replace_llama_attn_with_flash_attn
 
-            logging.info("patching with flash attention")
-            replace_llama_attn_with_flash_attn()
-    elif cfg.is_llama_derived_model and cfg.xformers_attention:
-        from axolotl.monkeypatch.llama_attn_hijack_xformers import (
-            hijack_llama_attention,
-        )
+                logging.info("patching with flash attention")
+                replace_llama_attn_with_flash_attn()
+        elif cfg.xformers_attention:
+            from axolotl.monkeypatch.llama_attn_hijack_xformers import (
+                hijack_llama_attention,
+            )
 
-        logging.info("patching with xformers attention")
-        hijack_llama_attention()
-    elif cfg.is_llama_derived_model and cfg.sdp_attention:
-        from axolotl.monkeypatch.llama_attn_hijack_xformers import (
-            hijack_llama_sdp_attention,
-        )
+            logging.info("patching with xformers attention")
+            hijack_llama_attention()
+        elif cfg.sdp_attention:
+            from axolotl.monkeypatch.llama_attn_hijack_xformers import (
+                hijack_llama_sdp_attention,
+            )
 
-        logging.info("patching with sdp attention")
-        hijack_llama_sdp_attention()
-    elif cfg.is_llama_derived_model and cfg.landmark_attention:
-        from axolotl.monkeypatch.llama_landmark_attn import (
-            MEM_TOKEN,
-            patch_llama_with_landmark_attn,
-        )
+            logging.info("patching with sdp attention")
+            hijack_llama_sdp_attention()
+        elif cfg.landmark_attention:
+            from axolotl.monkeypatch.llama_landmark_attn import (
+                MEM_TOKEN,
+                patch_llama_with_landmark_attn,
+            )
 
-        logging.info("patching with landmark attention")
-        patch_llama_with_landmark_attn()
+            logging.info("patching with landmark attention")
+            patch_llama_with_landmark_attn()
 
-        # Note: This might overwrite previous additional_special_tokens
-        tokenizer.add_special_tokens({"additional_special_tokens": [MEM_TOKEN]})
+            # Note: This might overwrite previous additional_special_tokens
+            tokenizer.add_special_tokens({"additional_special_tokens": [MEM_TOKEN]})
 
     if cfg.is_llama_derived_model and cfg.xpos_rope:
         from axolotl.monkeypatch.xpos_rope_llama_monkey_patch import (
@@ -347,11 +346,12 @@ def load_model(
         setattr(model, "is_parallelizable", True)
         setattr(model, "model_parallel", True)
 
-    requires_grad = []
-    for name, param in model.named_parameters(recurse=True):
-        if param.requires_grad:
-            requires_grad.append(f"{name}: {param.requires_grad}")
-    if len(requires_grad) == 0:
+    requires_grad = [
+        f"{name}: {param.requires_grad}"
+        for name, param in model.named_parameters(recurse=True)
+        if param.requires_grad
+    ]
+    if not requires_grad:
         logging.warning("there are no parameters that require gradient updates")
     model.config.use_cache = False
 

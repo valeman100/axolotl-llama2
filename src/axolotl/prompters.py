@@ -237,12 +237,12 @@ class Conversation:
         # seps = [self.sep, self.sep2]
         preamble = self.system + self.sep
         yield ("SYSTEM:", preamble)
-        for _, (role, message) in enumerate(self.messages):
+        for role, message in self.messages:
             if message:
-                yield (role + ":", " " + message)
+                yield (f"{role}:", f" {message}")
             else:
                 logging.warning(f"role with empty message: {role}")
-                yield (role + ":", "")
+                yield (f"{role}:", "")
 
     def copy(self):
         return Conversation(
@@ -318,5 +318,4 @@ class ShareGPTPrompter:  # pylint: disable=too-few-public-methods
             assert role == conv.roles[j % 2]
             conv.append_message(role, sentence["value"])
 
-        for part in conv.get_prompt():
-            yield part
+        yield from conv.get_prompt()
