@@ -280,7 +280,7 @@ def setup_trainer(cfg, train_dataset, eval_dataset, model, tokenizer):
         if cfg.lr_scheduler == "one_cycle" and (cfg.fsdp or cfg.adapter == "qlora")
         else transformers.Trainer
     )
-    trainer = trainer_cls(
+    return trainer_cls(
         model=model,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
@@ -293,5 +293,3 @@ def setup_trainer(cfg, train_dataset, eval_dataset, model, tokenizer):
         callbacks=callbacks,
         **trainer_kwargs,
     )
-
-    return trainer

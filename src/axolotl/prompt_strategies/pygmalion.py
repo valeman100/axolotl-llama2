@@ -36,7 +36,7 @@ class PygmalionPromptTokenizingStrategy(PromptTokenizingStrategy):
                 if message.endswith("\n<START>"):
                     message = message[:-8]
                 res = self._tokenize(
-                    prefix + "Persona: " + message.strip(),
+                    f"{prefix}Persona: {message.strip()}",
                     add_eos_token=False,
                     strip_bos_token=False,
                 )
@@ -45,7 +45,7 @@ class PygmalionPromptTokenizingStrategy(PromptTokenizingStrategy):
             elif role == "human":
                 prefix = "<|user|>"
                 res = self._tokenize(
-                    prefix + " " + message.strip(),
+                    f"{prefix} {message.strip()}",
                     add_eos_token=False,
                     strip_bos_token=True,
                 )
@@ -54,7 +54,7 @@ class PygmalionPromptTokenizingStrategy(PromptTokenizingStrategy):
             elif role == "bot":
                 prefix = "<|model|>"
                 res = self._tokenize(
-                    prefix + " " + message.strip(),
+                    f"{prefix} {message.strip()}",
                     add_eos_token=True,
                     strip_bos_token=True,
                 )

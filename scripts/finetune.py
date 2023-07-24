@@ -57,11 +57,7 @@ def choose_device(cfg):
 
 def get_multi_line_input() -> Optional[str]:
     print("Give me an instruction (Ctrl + D to finish): ")
-    instruction = ""
-    for line in sys.stdin:
-        instruction += line  # pylint: disable=consider-using-join
-    # instruction = pathlib.Path("/proc/self/fd/0").read_text()
-    return instruction
+    return "".join(sys.stdin)
 
 
 def do_inference(cfg, model, tokenizer, prompter: Optional[str]):
@@ -156,7 +152,7 @@ def choose_config(path: Path):
 
 
 def check_not_in(list1: List[str], list2: Union[Dict[str, Any], List[str]]) -> bool:
-    return not any(el in list2 for el in list1)
+    return all(el not in list2 for el in list1)
 
 
 def train(
@@ -177,11 +173,7 @@ def train(
         # if not strict, allow writing to cfg even if it's not in the yml already
         if k in cfg_keys or not cfg.strict:
             # handle booleans
-            if isinstance(cfg[k], bool):
-                cfg[k] = bool(kwargs[k])
-            else:
-                cfg[k] = kwargs[k]
-
+            cfg[k] = bool(kwargs[k]) if isinstance(cfg[k], bool) else kwargs[k]
     validate_config(cfg)
 
     # setup some derived config / hyperparams
@@ -271,10 +263,7 @@ def train(
         logging.info("calling do_inference function")
         prompter: Optional[str] = "AlpacaPrompter"
         if "prompter" in kwargs:
-            if kwargs["prompter"] == "None":
-                prompter = None
-            else:
-                prompter = kwargs["prompter"]
+            prompter = None if kwargs["prompter"] == "None" else kwargs["prompter"]
         do_inference(cfg, model, tokenizer, prompter=prompter)
         return
 
@@ -316,7 +305,7 @@ def train(
         possible_checkpoints = [
             str(cp) for cp in Path(cfg.output_dir).glob("checkpoint-*")
         ]
-        if len(possible_checkpoints) > 0:
+        if possible_checkpoints:
             sorted_paths = sorted(
                 possible_checkpoints,
                 key=lambda path: int(path.split("-")[-1]),

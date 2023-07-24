@@ -1,5 +1,6 @@
 """setup.py for axolotl"""
 
+
 from setuptools import find_packages, setup
 
 install_requires = []
@@ -8,9 +9,7 @@ with open("./requirements.txt", encoding="utf-8") as requirements_file:
     # need to manually install peft for now...
     reqs = [r.strip() for r in requirements_file.readlines() if "peft" not in r]
     reqs = [r for r in reqs if r and r[0] != "#"]
-    for r in reqs:
-        install_requires.append(r)
-
+    install_requires.extend(iter(reqs))
 setup(
     name="axolotl",
     version="0.1",
